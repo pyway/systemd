@@ -5,18 +5,16 @@
 #include <stdio.h>
 #include <sys/epoll.h>
 
-#include <libmount.h>
-
 #include "sd-messages.h"
 
 #include "alloc-util.h"
 #include "dbus-mount.h"
 #include "dbus-unit.h"
 #include "device.h"
-#include "escape.h"
 #include "exit-status.h"
 #include "format-util.h"
 #include "fstab-util.h"
+#include "libmount-util.h"
 #include "log.h"
 #include "manager.h"
 #include "mkdir.h"
@@ -36,9 +34,6 @@
 
 #define RETRY_UMOUNT_MAX 32
 
-DEFINE_TRIVIAL_CLEANUP_FUNC(struct libmnt_table*, mnt_free_table);
-DEFINE_TRIVIAL_CLEANUP_FUNC(struct libmnt_iter*, mnt_free_iter);
-
 static const UnitActiveState state_translation_table[_MOUNT_STATE_MAX] = {
         [MOUNT_DEAD] = UNIT_INACTIVE,
         [MOUNT_MOUNTING] = UNIT_ACTIVATING,
@@ -55,6 +50,7 @@ static const UnitActiveState state_translation_table[_MOUNT_STATE_MAX] = {
 
 static int mount_dispatch_timer(sd_event_source *source, usec_t usec, void *userdata);
 static int mount_dispatch_io(sd_event_source *source, int fd, uint32_t revents, void *userdata);
+static int mount_process_proc_self_mountinfo(Manager *m);
 
 static bool MOUNT_STATE_WITH_PROCESS(MountState state) {
         return IN_SET(state,
@@ -237,7 +233,7 @@ _pure_ static MountParameters* get_mount_parameters(Mount *m) {
         return get_mount_parameters_fragment(m);
 }
 
-static int update_parameters_proc_self_mount_info(
+static int update_parameters_proc_self_mountinfo(
                 Mount *m,
                 const char *what,
                 const char *options,
@@ -704,7 +700,7 @@ static int mount_coldplug(Unit *u) {
             pid_is_unwaited(m->control_pid) &&
             MOUNT_STATE_WITH_PROCESS(new_state)) {
 
-                r = unit_watch_pid(UNIT(m), m->control_pid);
+                r = unit_watch_pid(UNIT(m), m->control_pid, false);
                 if (r < 0)
                         return r;
 
@@ -810,9 +806,8 @@ static int mount_spawn(Mount *m, ExecCommand *c, pid_t *_pid) {
         if (r < 0)
                 return r;
 
-        r = unit_watch_pid(UNIT(m), pid);
+        r = unit_watch_pid(UNIT(m), pid, true);
         if (r < 0)
-                /* FIXME: we need to do something here */
                 return r;
 
         *_pid = pid;
@@ -831,7 +826,7 @@ static void mount_enter_dead(Mount *m, MountResult f) {
 
         m->exec_runtime = exec_runtime_unref(m->exec_runtime, true);
 
-        exec_context_destroy_runtime_directory(&m->exec_context, UNIT(m)->manager->prefix[EXEC_DIRECTORY_RUNTIME]);
+        unit_destroy_runtime_directory(UNIT(m), &m->exec_context);
 
         unit_unref_uid_gid(UNIT(m), true);
 
@@ -1104,7 +1099,7 @@ static int mount_start(Unit *u) {
 
         assert(IN_SET(m->state, MOUNT_DEAD, MOUNT_FAILED));
 
-        r = unit_start_limit_test(u);
+        r = unit_test_start_limit(u);
         if (r < 0) {
                 mount_enter_dead(m, MOUNT_FAILURE_START_LIMIT_HIT);
                 return r;
@@ -1286,6 +1281,22 @@ static void mount_sigchld_event(Unit *u, pid_t pid, int code, int status) {
         if (pid != m->control_pid)
                 return;
 
+        /* So here's the thing, we really want to know before /usr/bin/mount or /usr/bin/umount exit whether
+         * they established/remove a mount. This is important when mounting, but even more so when unmounting
+         * since we need to deal with nested mounts and otherwise cannot safely determine whether to repeat
+         * the unmounts. In theory, the kernel fires /proc/self/mountinfo changes off before returning from
+         * the mount() or umount() syscalls, and thus we should see the changes to the proc file before we
+         * process the waitid() for the /usr/bin/(u)mount processes. However, this is unfortunately racy: we
+         * have to waitid() for processes using P_ALL (since we need to reap unexpected children that got
+         * reparented to PID 1), but when using P_ALL we might end up reaping processes that terminated just
+         * instants ago, i.e. already after our last event loop iteration (i.e. after the last point we might
+         * have noticed /proc/self/mountinfo events via epoll). This means event loop priorities for
+         * processing SIGCHLD vs. /proc/self/mountinfo IO events are not as relevant as we want. To fix that
+         * race, let's explicitly scan /proc/self/mountinfo before we start processing /usr/bin/(u)mount
+         * dying. It's ugly, but it makes our ordering systematic again, and makes sure we always see
+         * /proc/self/mountinfo changes before our mount/umount exits. */
+        (void) mount_process_proc_self_mountinfo(u->manager);
+
         m->control_pid = 0;
 
         if (is_clean_exit(code, status, EXIT_CLEAN_COMMAND, NULL))
@@ -1312,9 +1323,10 @@ static void mount_sigchld_event(Unit *u, pid_t pid, int code, int status) {
         }
 
         unit_log_process_exit(
-                        u, f == MOUNT_SUCCESS ? LOG_DEBUG : LOG_NOTICE,
+                        u,
                         "Mount process",
                         mount_exec_command_to_string(m->control_command_id),
+                        f == MOUNT_SUCCESS,
                         code, status);
 
         /* Note that due to the io event priority logic, we can be sure the new mountinfo is loaded
@@ -1474,7 +1486,7 @@ static int mount_setup_new_unit(
         if (r < 0)
                 return r;
 
-        r = update_parameters_proc_self_mount_info(MOUNT(u), what, options, fstype);
+        r = update_parameters_proc_self_mountinfo(MOUNT(u), what, options, fstype);
         if (r < 0)
                 return r;
 
@@ -1512,7 +1524,7 @@ static int mount_setup_existing_unit(
                         return -ENOMEM;
         }
 
-        r = update_parameters_proc_self_mount_info(MOUNT(u), what, options, fstype);
+        r = update_parameters_proc_self_mountinfo(MOUNT(u), what, options, fstype);
         if (r < 0)
                 return r;
         if (r > 0)
@@ -1603,32 +1615,25 @@ static int mount_setup_unit(
 }
 
 static int mount_load_proc_self_mountinfo(Manager *m, bool set_flags) {
-        _cleanup_(mnt_free_tablep) struct libmnt_table *t = NULL;
-        _cleanup_(mnt_free_iterp) struct libmnt_iter *i = NULL;
+        _cleanup_(mnt_free_tablep) struct libmnt_table *table = NULL;
+        _cleanup_(mnt_free_iterp) struct libmnt_iter *iter = NULL;
         int r;
 
         assert(m);
 
-        t = mnt_new_table();
-        i = mnt_new_iter(MNT_ITER_FORWARD);
-        if (!t || !i)
-                return log_oom();
-
-        r = mnt_table_parse_mtab(t, NULL);
+        r = libmount_parse(NULL, NULL, &table, &iter);
         if (r < 0)
                 return log_error_errno(r, "Failed to parse /proc/self/mountinfo: %m");
 
         for (;;) {
                 struct libmnt_fs *fs;
                 const char *device, *path, *options, *fstype;
-                _cleanup_free_ char *d = NULL, *p = NULL;
-                int k;
 
-                k = mnt_table_next_fs(t, i, &fs);
-                if (k == 1)
+                r = mnt_table_next_fs(table, iter, &fs);
+                if (r == 1)
                         break;
-                if (k < 0)
-                        return log_error_errno(k, "Failed to get next entry from /proc/self/mountinfo: %m");
+                if (r < 0)
+                        return log_error_errno(r, "Failed to get next entry from /proc/self/mountinfo: %m");
 
                 device = mnt_fs_get_source(fs);
                 path = mnt_fs_get_target(fs);
@@ -1638,15 +1643,9 @@ static int mount_load_proc_self_mountinfo(Manager *m, bool set_flags) {
                 if (!device || !path)
                         continue;
 
-                if (cunescape(device, UNESCAPE_RELAX, &d) < 0)
-                        return log_oom();
+                device_found_node(m, device, DEVICE_FOUND_MOUNT, DEVICE_FOUND_MOUNT);
 
-                if (cunescape(path, UNESCAPE_RELAX, &p) < 0)
-                        return log_oom();
-
-                device_found_node(m, d, DEVICE_FOUND_MOUNT, DEVICE_FOUND_MOUNT);
-
-                (void) mount_setup_unit(m, d, p, options, fstype, set_flags);
+                (void) mount_setup_unit(m, device, path, options, fstype, set_flags);
         }
 
         return 0;
@@ -1770,39 +1769,41 @@ fail:
         mount_shutdown(m);
 }
 
-static int mount_dispatch_io(sd_event_source *source, int fd, uint32_t revents, void *userdata) {
+static int drain_libmount(Manager *m) {
+        bool rescan = false;
+        int r;
+
+        assert(m);
+
+        /* Drain all events and verify that the event is valid.
+         *
+         * Note that libmount also monitors /run/mount mkdir if the directory does not exist yet. The mkdir
+         * may generate event which is irrelevant for us.
+         *
+         * error: r < 0; valid: r == 0, false positive: r == 1 */
+        do {
+                r = mnt_monitor_next_change(m->mount_monitor, NULL, NULL);
+                if (r < 0)
+                        return log_error_errno(r, "Failed to drain libmount events: %m");
+                if (r == 0)
+                        rescan = true;
+        } while (r == 0);
+
+        return rescan;
+}
+
+static int mount_process_proc_self_mountinfo(Manager *m) {
         _cleanup_set_free_free_ Set *around = NULL, *gone = NULL;
-        Manager *m = userdata;
         const char *what;
         Iterator i;
         Unit *u;
         int r;
 
         assert(m);
-        assert(revents & EPOLLIN);
 
-        if (fd == mnt_monitor_get_fd(m->mount_monitor)) {
-                bool rescan = false;
-
-                /* Drain all events and verify that the event is valid.
-                 *
-                 * Note that libmount also monitors /run/mount mkdir if the
-                 * directory does not exist yet. The mkdir may generate event
-                 * which is irrelevant for us.
-                 *
-                 * error: r < 0; valid: r == 0, false positive: rc == 1 */
-                do {
-                        r = mnt_monitor_next_change(m->mount_monitor, NULL, NULL);
-                        if (r == 0)
-                                rescan = true;
-                        else if (r < 0)
-                                return log_error_errno(r, "Failed to drain libmount events: %m");
-                } while (r == 0);
-
-                log_debug("libmount event [rescan: %s]", yes_no(rescan));
-                if (!rescan)
-                        return 0;
-        }
+        r = drain_libmount(m);
+        if (r <= 0)
+                return r;
 
         r = mount_load_proc_self_mountinfo(m, true);
         if (r < 0) {
@@ -1834,7 +1835,7 @@ static int mount_dispatch_io(sd_event_source *source, int fd, uint32_t revents, 
                         }
 
                         mount->from_proc_self_mountinfo = false;
-                        assert_se(update_parameters_proc_self_mount_info(mount, NULL, NULL, NULL) >= 0);
+                        assert_se(update_parameters_proc_self_mountinfo(mount, NULL, NULL, NULL) >= 0);
 
                         switch (mount->state) {
 
@@ -1903,6 +1904,15 @@ static int mount_dispatch_io(sd_event_source *source, int fd, uint32_t revents, 
         return 0;
 }
 
+static int mount_dispatch_io(sd_event_source *source, int fd, uint32_t revents, void *userdata) {
+        Manager *m = userdata;
+
+        assert(m);
+        assert(revents & EPOLLIN);
+
+        return mount_process_proc_self_mountinfo(m);
+}
+
 static void mount_reset_failed(Unit *u) {
         Mount *m = MOUNT(u);
 
@@ -1920,7 +1930,7 @@ static int mount_kill(Unit *u, KillWho who, int signo, sd_bus_error *error) {
 
         assert(m);
 
-        return unit_kill_common(u, who, signo, -1, MOUNT(u)->control_pid, error);
+        return unit_kill_common(u, who, signo, -1, m->control_pid, error);
 }
 
 static int mount_control_pid(Unit *u) {
@@ -1985,6 +1995,8 @@ const UnitVTable mount_vtable = {
 
         .active_state = mount_active_state,
         .sub_state_to_string = mount_sub_state_to_string,
+
+        .will_restart = unit_will_restart_default,
 
         .may_gc = mount_may_gc,
 

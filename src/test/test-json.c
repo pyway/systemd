@@ -4,10 +4,12 @@
 
 #include "alloc-util.h"
 #include "fd-util.h"
+#include "fileio.h"
 #include "json-internal.h"
 #include "json.h"
 #include "string-util.h"
 #include "strv.h"
+#include "tests.h"
 #include "util.h"
 
 static void test_tokenizer(const char *data, ...) {
@@ -87,6 +89,7 @@ static void test_variant(const char *data, Test test) {
         r = json_variant_format(v, 0, &s);
         assert_se(r >= 0);
         assert_se(s);
+        assert_se((size_t) r == strlen(s));
 
         log_info("formatted normally: %s\n", s);
 
@@ -103,6 +106,7 @@ static void test_variant(const char *data, Test test) {
         r = json_variant_format(v, JSON_FORMAT_PRETTY, &s);
         assert_se(r >= 0);
         assert_se(s);
+        assert_se((size_t) r == strlen(s));
 
         log_info("formatted prettily:\n%s", s);
 
@@ -118,12 +122,14 @@ static void test_variant(const char *data, Test test) {
         r = json_variant_format(v, JSON_FORMAT_COLOR, &s);
         assert_se(r >= 0);
         assert_se(s);
+        assert_se((size_t) r == strlen(s));
         printf("Normal with color: %s\n", s);
 
         s = mfree(s);
         r = json_variant_format(v, JSON_FORMAT_COLOR|JSON_FORMAT_PRETTY, &s);
         assert_se(r >= 0);
         assert_se(s);
+        assert_se((size_t) r == strlen(s));
         printf("Pretty with color:\n%s\n", s);
 
         if (test)
@@ -357,7 +363,7 @@ static void test_source(void) {
                "%s"
                "--- original end ---\n", data);
 
-        assert_se(f = fmemopen((void*) data, strlen(data), "r"));
+        assert_se(f = fmemopen_unlocked((void*) data, strlen(data), "r"));
 
         assert_se(json_parse_file(f, "waldo", &v, NULL, NULL) >= 0);
 
@@ -391,6 +397,13 @@ static void test_depth(void) {
                         log_info("max depth at %u", i);
                         break;
                 }
+#if HAS_FEATURE_MEMORY_SANITIZER
+                /* msan doesn't like the stack nesting to be too deep. Let's quit early. */
+                if (i >= 128) {
+                        log_info("quitting early at depth %u", i);
+                        break;
+                }
+#endif
 
                 assert_se(r >= 0);
 
@@ -403,10 +416,7 @@ static void test_depth(void) {
 }
 
 int main(int argc, char *argv[]) {
-
-        log_set_max_level(LOG_DEBUG);
-        log_parse_environment();
-        log_open();
+        test_setup_logging(LOG_DEBUG);
 
         test_tokenizer("x", -EINVAL);
         test_tokenizer("", JSON_TOKEN_END);

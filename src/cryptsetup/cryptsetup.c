@@ -4,6 +4,9 @@
 #include <mntent.h>
 #include <string.h>
 #include <sys/mman.h>
+#include <sys/stat.h>
+#include <sys/types.h>
+#include <unistd.h>
 
 #include "sd-device.h"
 
@@ -16,12 +19,12 @@
 #include "log.h"
 #include "main-func.h"
 #include "mount-util.h"
+#include "nulstr-util.h"
 #include "parse-util.h"
 #include "path-util.h"
+#include "pretty-print.h"
 #include "string-util.h"
 #include "strv.h"
-#include "pretty-print.h"
-#include "util.h"
 
 /* internal helper */
 #define ANY_LUKS "LUKS"
@@ -44,6 +47,8 @@ static unsigned arg_tries = 3;
 static bool arg_readonly = false;
 static bool arg_verify = false;
 static bool arg_discards = false;
+static bool arg_same_cpu_crypt = false;
+static bool arg_submit_from_crypt_cpus = false;
 static bool arg_tcrypt_hidden = false;
 static bool arg_tcrypt_system = false;
 #ifdef CRYPT_TCRYPT_VERA_MODES
@@ -76,7 +81,10 @@ static int parse_one_option(const char *option) {
         assert(option);
 
         /* Handled outside of this tool */
-        if (STR_IN_SET(option, "noauto", "auto", "nofail", "fail", "_netdev"))
+        if (STR_IN_SET(option, "noauto", "auto", "nofail", "fail", "_netdev", "keyfile-timeout"))
+                return 0;
+
+        if (startswith(option, "keyfile-timeout="))
                 return 0;
 
         if ((val = startswith(option, "cipher="))) {
@@ -199,6 +207,10 @@ static int parse_one_option(const char *option) {
                 arg_verify = true;
         else if (STR_IN_SET(option, "allow-discards", "discard"))
                 arg_discards = true;
+        else if (streq(option, "same-cpu-crypt"))
+                arg_same_cpu_crypt = true;
+        else if (streq(option, "submit-from-crypt-cpus"))
+                arg_submit_from_crypt_cpus = true;
         else if (streq(option, "luks"))
                 arg_type = ANY_LUKS;
         else if (streq(option, "tcrypt"))
@@ -478,7 +490,6 @@ static int attach_tcrypt(
 static int attach_luks_or_plain(struct crypt_device *cd,
                                 const char *name,
                                 const char *key_file,
-                                const char *data_device,
                                 char **passwords,
                                 uint32_t flags) {
         int r = 0;
@@ -488,16 +499,7 @@ static int attach_luks_or_plain(struct crypt_device *cd,
         assert(name);
         assert(key_file || passwords);
 
-        if (!arg_type || STR_IN_SET(arg_type, ANY_LUKS, CRYPT_LUKS1)) {
-                r = crypt_load(cd, CRYPT_LUKS, NULL);
-                if (r < 0)
-                        return log_error_errno(r, "Failed to load LUKS superblock on device %s: %m", crypt_get_device_name(cd));
-
-                if (data_device)
-                        r = crypt_set_data_device(cd, data_device);
-        }
-
-        if ((!arg_type && r < 0) || streq_ptr(arg_type, CRYPT_PLAIN)) {
+        if ((!arg_type && !crypt_get_type(cd)) || streq_ptr(arg_type, CRYPT_PLAIN)) {
                 struct crypt_params_plain params = {
                         .offset = arg_offset,
                         .skip = arg_skip,
@@ -535,15 +537,15 @@ static int attach_luks_or_plain(struct crypt_device *cd,
                 /* for CRYPT_PLAIN limit reads from keyfile to key length, and ignore keyfile-size */
                 arg_keyfile_size = arg_key_size;
 
-                /* In contrast to what the name crypt_setup() might suggest this doesn't actually format
+                /* In contrast to what the name crypt_format() might suggest this doesn't actually format
                  * anything, it just configures encryption parameters when used for plain mode. */
                 r = crypt_format(cd, CRYPT_PLAIN, cipher, cipher_mode, NULL, NULL, arg_keyfile_size, &params);
+                if (r < 0)
+                        return log_error_errno(r, "Loading of cryptographic parameters failed: %m");
 
                 /* hash == NULL implies the user passed "plain" */
                 pass_volume_key = (params.hash == NULL);
         }
-        if (r < 0)
-                return log_error_errno(r, "Loading of cryptographic parameters failed: %m");
 
         log_info("Set cipher %s, mode %s, key size %i bits for device %s.",
                  crypt_get_cipher(cd),
@@ -555,6 +557,10 @@ static int attach_luks_or_plain(struct crypt_device *cd,
                 r = crypt_activate_by_keyfile_offset(cd, name, arg_key_slot, key_file, arg_keyfile_size, arg_keyfile_offset, flags);
                 if (r == -EPERM) {
                         log_error_errno(r, "Failed to activate with key file '%s'. (Key data incorrect?)", key_file);
+                        return -EAGAIN; /* Log actual error, but return EAGAIN */
+                }
+                if (r == -EINVAL) {
+                        log_error_errno(r, "Failed to activate with key file '%s'. (Key file missing?)", key_file);
                         return -EAGAIN; /* Log actual error, but return EAGAIN */
                 }
                 if (r < 0)
@@ -602,6 +608,24 @@ static int help(void) {
         return 0;
 }
 
+static uint32_t determine_flags(void) {
+        uint32_t flags = 0;
+
+        if (arg_readonly)
+                flags |= CRYPT_ACTIVATE_READONLY;
+
+        if (arg_discards)
+                flags |= CRYPT_ACTIVATE_ALLOW_DISCARDS;
+
+        if (arg_same_cpu_crypt)
+                flags |= CRYPT_ACTIVATE_SAME_CPU_CRYPT;
+
+        if (arg_submit_from_crypt_cpus)
+                flags |= CRYPT_ACTIVATE_SUBMIT_FROM_CRYPT_CPUS;
+
+        return flags;
+}
+
 static int run(int argc, char *argv[]) {
         _cleanup_(crypt_freep) struct crypt_device *cd = NULL;
         int r;
@@ -615,6 +639,11 @@ static int run(int argc, char *argv[]) {
         }
 
         log_setup_service();
+
+        crypt_set_log_callback(NULL, cryptsetup_log_glue, NULL);
+        if (DEBUG_LOGGING)
+                /* libcryptsetup won't even consider debug messages by default */
+                crypt_set_debug_level(CRYPT_DEBUG_ALL);
 
         umask(0022);
 
@@ -666,11 +695,7 @@ static int run(int argc, char *argv[]) {
                         return 0;
                 }
 
-                if (arg_readonly)
-                        flags |= CRYPT_ACTIVATE_READONLY;
-
-                if (arg_discards)
-                        flags |= CRYPT_ACTIVATE_ALLOW_DISCARDS;
+                flags = determine_flags();
 
                 if (arg_timeout == USEC_INFINITY)
                         until = 0;
@@ -686,6 +711,30 @@ static int run(int argc, char *argv[]) {
                          * warning it's OK to do this in two steps. */
                         if (stat(key_file, &st) >= 0 && S_ISREG(st.st_mode) && (st.st_mode & 0005))
                                 log_warning("Key file %s is world-readable. This is not a good idea!", key_file);
+                }
+
+                if (!arg_type || STR_IN_SET(arg_type, ANY_LUKS, CRYPT_LUKS1)) {
+                        r = crypt_load(cd, CRYPT_LUKS, NULL);
+                        if (r < 0)
+                                return log_error_errno(r, "Failed to load LUKS superblock on device %s: %m", crypt_get_device_name(cd));
+
+                        if (arg_header) {
+                                r = crypt_set_data_device(cd, argv[3]);
+                                if (r < 0)
+                                        return log_error_errno(r, "Failed to set LUKS data device %s: %m", argv[3]);
+                        }
+#ifdef CRYPT_ANY_TOKEN
+                        /* Tokens are available in LUKS2 only, but it is ok to call (and fail) with LUKS1. */
+                        if (!key_file) {
+                                r = crypt_activate_by_token(cd, argv[2], CRYPT_ANY_TOKEN, NULL, flags);
+                                if (r >= 0) {
+                                        log_debug("Volume %s activated with LUKS token id %i.", argv[2], r);
+                                        return 0;
+                                }
+
+                                log_debug_errno(r, "Token activation unsuccessful for device %s: %m", crypt_get_device_name(cd));
+                        }
+#endif
                 }
 
                 for (tries = 0; arg_tries == 0 || tries < arg_tries; tries++) {
@@ -705,7 +754,6 @@ static int run(int argc, char *argv[]) {
                                 r = attach_luks_or_plain(cd,
                                                          argv[2],
                                                          key_file,
-                                                         arg_header ? argv[3] : NULL,
                                                          passwords,
                                                          flags);
                         if (r >= 0)

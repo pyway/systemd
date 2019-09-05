@@ -23,12 +23,12 @@
 #include "mkdir.h"
 #include "mount-setup.h"
 #include "mountpoint-util.h"
+#include "nulstr-util.h"
 #include "path-util.h"
 #include "set.h"
 #include "smack-util.h"
 #include "strv.h"
 #include "user-util.h"
-#include "util.h"
 #include "virt.h"
 
 typedef enum MountMode {
@@ -332,7 +332,7 @@ int mount_cgroup_controllers(void) {
                 if (!options)
                         options = TAKE_PTR(controller);
 
-                where = strappend("/sys/fs/cgroup/", options);
+                where = path_join("/sys/fs/cgroup", options);
                 if (!where)
                         return log_oom();
 

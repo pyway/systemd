@@ -1,10 +1,7 @@
 <?xml version='1.0'?>
-<!DOCTYPE refentry PUBLIC "-//OASIS//DTD DocBook XML V4.2//EN"
-"http://www.oasis-open.org/docbook/xml/4.2/docbookx.dtd">
-
-<!--
-  SPDX-License-Identifier: LGPL-2.1+
--->
+<!DOCTYPE refentry PUBLIC "-//OASIS//DTD DocBook XML V4.5//EN"
+  "http://www.oasis-open.org/docbook/xml/4.2/docbookx.dtd">
+<!-- SPDX-License-Identifier: LGPL-2.1+ -->
 
 <refentry id="networkctl" conditional='ENABLE_NETWORKD'
           xmlns:xi="http://www.w3.org/2001/XInclude">
@@ -58,6 +55,17 @@
 
         <listitem>
           <para>Show all links with <command>status</command>.</para>
+        </listitem>
+      </varlistentry>
+
+      <varlistentry>
+        <term>
+          <option>-s</option>
+          <option>--stats</option>
+        </term>
+
+        <listitem>
+          <para>Show link statistics with <command>status</command>.</para>
         </listitem>
       </varlistentry>
 
@@ -116,23 +124,29 @@
                 </listitem>
               </varlistentry>
               <varlistentry>
+                <term>degraded-carrier</term>
+                <listitem>
+                  <para>for bond or bridge master, one of the bonding or bridge slave network interfaces is
+                  in off, no-carrier, or dormant state</para>
+                </listitem>
+              </varlistentry>
+              <varlistentry>
                 <term>carrier</term>
                 <listitem>
-                  <para>the link has a carrier, or for bond master, all bonding slave network interfaces are
-                  enslaved to the master.</para>
+                  <para>the link has a carrier, or for bond or bridge master, all bonding or bridge slave
+                  network interfaces are enslaved to the master.</para>
                 </listitem>
               </varlistentry>
               <varlistentry>
                 <term>degraded</term>
                 <listitem>
-                  <para>the link has carrier and addresses valid on the local link configured, or for bond
-                  master, one of the bonding slave network interfaces is in off, no-carrier, or dormant</para>
+                  <para>the link has carrier and addresses valid on the local link configured</para>
                 </listitem>
               </varlistentry>
               <varlistentry>
                 <term>enslaved</term>
                 <listitem>
-                  <para>the link has carrier and is enslaved to other network interfaces</para>
+                  <para>the link has carrier and is enslaved to bond or bridge master network interface</para>
                 </listitem>
               </varlistentry>
               <varlistentry>
@@ -266,6 +280,13 @@ s - Service VLAN, m - Two-port MAC Relay (TPMR)
         ::/96                                 3
        ::1/128                                0</programlisting></para>
         </listitem>
+      </varlistentry>
+
+       <varlistentry>
+        <term>
+          <command>delete</command>
+        </term>
+        <listitem><para>Deletes virtual netdevs. Takes interface name or index number.</para></listitem>
       </varlistentry>
 
     </variablelist>

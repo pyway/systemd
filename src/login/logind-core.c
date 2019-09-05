@@ -17,13 +17,16 @@
 #include "cgroup-util.h"
 #include "conf-parser.h"
 #include "device-util.h"
+#include "errno-util.h"
 #include "fd-util.h"
+#include "limits-util.h"
 #include "logind.h"
 #include "parse-util.h"
 #include "path-util.h"
 #include "process-util.h"
 #include "strv.h"
 #include "terminal-util.h"
+#include "udev-util.h"
 #include "user-util.h"
 
 void manager_reset_config(Manager *m) {
@@ -189,31 +192,27 @@ int manager_add_user_by_uid(Manager *m, uid_t uid, User **_user) {
         errno = 0;
         p = getpwuid(uid);
         if (!p)
-                return errno > 0 ? -errno : -ENOENT;
+                return errno_or_else(ENOENT);
 
         return manager_add_user(m, uid, p->pw_gid, p->pw_name, p->pw_dir, _user);
 }
 
-int manager_add_inhibitor(Manager *m, const char* id, Inhibitor **_inhibitor) {
+int manager_add_inhibitor(Manager *m, const char* id, Inhibitor **ret) {
         Inhibitor *i;
+        int r;
 
         assert(m);
         assert(id);
 
         i = hashmap_get(m->inhibitors, id);
-        if (i) {
-                if (_inhibitor)
-                        *_inhibitor = i;
-
-                return 0;
+        if (!i) {
+                r = inhibitor_new(&i, m, id);
+                if (r < 0)
+                        return r;
         }
 
-        i = inhibitor_new(m, id);
-        if (!i)
-                return -ENOMEM;
-
-        if (_inhibitor)
-                *_inhibitor = i;
+        if (ret)
+                *ret = i;
 
         return 0;
 }
@@ -238,14 +237,12 @@ int manager_add_button(Manager *m, const char *name, Button **_button) {
 }
 
 int manager_process_seat_device(Manager *m, sd_device *d) {
-        const char *action;
         Device *device;
         int r;
 
         assert(m);
 
-        if (sd_device_get_property_value(d, "ACTION", &action) >= 0 &&
-            streq(action, "remove")) {
+        if (device_for_action(d, DEVICE_ACTION_REMOVE)) {
                 const char *syspath;
 
                 r = sd_device_get_syspath(d, &syspath);
@@ -305,7 +302,7 @@ int manager_process_seat_device(Manager *m, sd_device *d) {
 }
 
 int manager_process_button_device(Manager *m, sd_device *d) {
-        const char *action, *sysname;
+        const char *sysname;
         Button *b;
         int r;
 
@@ -315,8 +312,7 @@ int manager_process_button_device(Manager *m, sd_device *d) {
         if (r < 0)
                 return r;
 
-        if (sd_device_get_property_value(d, "ACTION", &action) >= 0 &&
-            streq(action, "remove")) {
+        if (device_for_action(d, DEVICE_ACTION_REMOVE)) {
 
                 b = hashmap_get(m->buttons, sysname);
                 if (!b)
@@ -694,8 +690,7 @@ bool manager_all_buttons_ignored(Manager *m) {
                 return false;
         if (m->handle_lid_switch != HANDLE_IGNORE)
                 return false;
-        if (m->handle_lid_switch_ep != _HANDLE_ACTION_INVALID &&
-            m->handle_lid_switch_ep != HANDLE_IGNORE)
+        if (!IN_SET(m->handle_lid_switch_ep, _HANDLE_ACTION_INVALID, HANDLE_IGNORE))
                 return false;
         if (m->handle_lid_switch_docked != HANDLE_IGNORE)
                 return false;

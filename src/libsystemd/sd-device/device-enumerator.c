@@ -1,5 +1,8 @@
 /* SPDX-License-Identifier: LGPL-2.1+ */
 
+#include <fcntl.h>
+#include <unistd.h>
+
 #include "sd-device.h"
 
 #include "alloc-util.h"
@@ -8,9 +11,9 @@
 #include "dirent-util.h"
 #include "fd-util.h"
 #include "set.h"
+#include "sort-util.h"
 #include "string-util.h"
 #include "strv.h"
-#include "util.h"
 
 #define DEVICE_ENUMERATE_MAX_DEPTH 256
 
@@ -425,7 +428,6 @@ static bool match_tag(sd_device_enumerator *enumerator, sd_device *device) {
 static bool match_parent(sd_device_enumerator *enumerator, sd_device *device) {
         const char *syspath_parent, *syspath;
         Iterator i;
-        int r;
 
         assert(enumerator);
         assert(device);
@@ -433,8 +435,7 @@ static bool match_parent(sd_device_enumerator *enumerator, sd_device *device) {
         if (set_isempty(enumerator->match_parent))
                 return true;
 
-        r = sd_device_get_syspath(device, &syspath);
-        assert(r >= 0);
+        assert_se(sd_device_get_syspath(device, &syspath) >= 0);
 
         SET_FOREACH(syspath_parent, enumerator->match_parent, i)
                 if (path_startswith(syspath, syspath_parent))
@@ -751,7 +752,7 @@ static int parent_crawl_children(sd_device_enumerator *enumerator, const char *p
                 if (dent->d_type != DT_DIR)
                         continue;
 
-                child = strjoin(path, "/", dent->d_name);
+                child = path_join(path, dent->d_name);
                 if (!child)
                         return -ENOMEM;
 

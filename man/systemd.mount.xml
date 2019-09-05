@@ -1,10 +1,7 @@
 <?xml version='1.0'?> <!--*-nxml-*-->
-<!DOCTYPE refentry PUBLIC "-//OASIS//DTD DocBook XML V4.2//EN"
+<!DOCTYPE refentry PUBLIC "-//OASIS//DTD DocBook XML V4.5//EN"
   "http://www.oasis-open.org/docbook/xml/4.2/docbookx.dtd">
-
-<!--
-  SPDX-License-Identifier: LGPL-2.1+
--->
+<!-- SPDX-License-Identifier: LGPL-2.1+ -->
 
 <refentry id="systemd.mount">
   <refentryinfo>
@@ -37,9 +34,9 @@
     this unit type. See
     <citerefentry><refentrytitle>systemd.unit</refentrytitle><manvolnum>5</manvolnum></citerefentry>
     for the common options of all unit configuration files. The common
-    configuration items are configured in the generic [Unit] and
-    [Install] sections. The mount specific configuration options are
-    configured in the [Mount] section.</para>
+    configuration items are configured in the generic <literal>[Unit]</literal> and
+    <literal>[Install]</literal> sections. The mount specific configuration options are
+    configured in the <literal>[Mount]</literal> section.</para>
 
     <para>Additional options are listed in
     <citerefentry><refentrytitle>systemd.exec</refentrytitle><manvolnum>5</manvolnum></citerefentry>,
@@ -86,6 +83,11 @@
     disabled. For a longer discussion see <ulink
     url="https://www.freedesktop.org/wiki/Software/systemd/APIFileSystems">API
     File Systems</ulink>.</para>
+
+    <para>The
+    <citerefentry><refentrytitle>systemd-mount</refentrytitle><manvolnum>1</manvolnum></citerefentry> command
+    allows creating <filename>.mount</filename> and <filename>.automount</filename> units dynamically and
+    transiently from the command line.</para>
   </refsect1>
 
   <refsect1>
@@ -180,7 +182,7 @@
     mount options are understood by systemd which influence how
     dependencies are created for mount points. systemd will create a
     dependency of type <varname>Wants=</varname> or
-    <option>Requires</option> (see option <option>nofail</option>
+    <option>Requires=</option> (see option <option>nofail</option>
     below), from either <filename>local-fs.target</filename> or
     <filename>remote-fs.target</filename>, depending whether the file
     system is local or remote.</para>
@@ -310,7 +312,7 @@
         <listitem><para>The file system will be initialized
         on the device. If the device is not "empty", i.e. it contains any signature,
         the operation will be skipped. It is hence expected that this option
-        remains set even after the device has been initalized.</para>
+        remains set even after the device has been initialized.</para>
 
         <para>Note that this option can only be used in
         <filename>/etc/fstab</filename>, and will be ignored when part of the
@@ -538,7 +540,8 @@
         <citerefentry project='man-pages'><refentrytitle>proc</refentrytitle><manvolnum>5</manvolnum></citerefentry>,
         <citerefentry project='man-pages'><refentrytitle>mount</refentrytitle><manvolnum>8</manvolnum></citerefentry>,
         <citerefentry><refentrytitle>systemd-fstab-generator</refentrytitle><manvolnum>8</manvolnum></citerefentry>,
-        <citerefentry><refentrytitle>systemd.directives</refentrytitle><manvolnum>7</manvolnum></citerefentry>
+        <citerefentry><refentrytitle>systemd.directives</refentrytitle><manvolnum>7</manvolnum></citerefentry>,
+        <citerefentry><refentrytitle>systemd-mount</refentrytitle><manvolnum>1</manvolnum></citerefentry>
       </para>
   </refsect1>
 

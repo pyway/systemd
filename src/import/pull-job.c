@@ -1,9 +1,12 @@
 /* SPDX-License-Identifier: LGPL-2.1+ */
 
+#include <fcntl.h>
+#include <sys/stat.h>
 #include <sys/xattr.h>
 
 #include "alloc-util.h"
 #include "fd-util.h"
+#include "format-util.h"
 #include "gcrypt-util.h"
 #include "hexdecoct.h"
 #include "import-util.h"
@@ -581,7 +584,7 @@ int pull_job_begin(PullJob *j) {
                 if (!cc)
                         return -ENOMEM;
 
-                hdr = strappend("If-None-Match: ", cc);
+                hdr = strjoin("If-None-Match: ", cc);
                 if (!hdr)
                         return -ENOMEM;
 

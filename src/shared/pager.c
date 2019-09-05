@@ -24,6 +24,7 @@
 #include "string-util.h"
 #include "strv.h"
 #include "terminal-util.h"
+#include "util.h"
 
 static pid_t pager_pid = 0;
 
@@ -193,11 +194,13 @@ int pager_open(PagerFlags flags) {
                                        "Failed to execute '%s', using next fallback pager: %m", exe);
                 }
 
-                r = loop_write(exe_name_pipe[1], "(built-in)", strlen("(built-in") + 1, false);
+                r = loop_write(exe_name_pipe[1], "(built-in)", strlen("(built-in)") + 1, false);
                 if (r < 0) {
                         log_error_errno(r, "Failed to write pager name to socket: %m");
                         _exit(EXIT_FAILURE);
                 }
+                /* Close pipe to signal the parent to start sending data */
+                safe_close_pair(exe_name_pipe);
                 pager_fallback();
                 /* not reached */
         }

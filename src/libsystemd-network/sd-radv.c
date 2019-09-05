@@ -18,12 +18,12 @@
 #include "in-addr-util.h"
 #include "io-util.h"
 #include "macro.h"
+#include "memory-util.h"
 #include "radv-internal.h"
 #include "random-util.h"
 #include "socket-util.h"
 #include "string-util.h"
 #include "strv.h"
-#include "util.h"
 
 _public_ int sd_radv_new(sd_radv **ret) {
         _cleanup_(sd_radv_unrefp) sd_radv *ra = NULL;
@@ -598,6 +598,7 @@ _public_ sd_radv_prefix *sd_radv_remove_prefix(sd_radv *ra,
 
                 LIST_REMOVE(prefix, ra->prefixes, cur);
                 ra->n_prefixes--;
+                sd_radv_prefix_unref(cur);
 
                 break;
         }

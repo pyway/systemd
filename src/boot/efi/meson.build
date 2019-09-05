@@ -2,14 +2,18 @@
 
 efi_headers = files('''
         console.h
+        crc32.h
         disk.h
         graphics.h
         linux.h
         measure.h
+        missing_efi.h
         pe.h
+        random-seed.h
+        sha256.h
+        shim.h
         splash.h
         util.h
-        shim.h
 '''.split())
 
 common_sources = '''
@@ -23,6 +27,9 @@ common_sources = '''
 systemd_boot_sources = '''
         boot.c
         console.c
+        crc32.c
+        random-seed.c
+        sha256.c
         shim.c
 '''.split()
 
@@ -127,6 +134,9 @@ if have_gnu_efi
         elif efi_arch == 'ia32'
                 compile_args += ['-mno-sse',
                                  '-mno-mmx']
+        endif
+        if get_option('werror') == true
+                compile_args += ['-Werror']
         endif
 
         efi_ldflags = ['-T',

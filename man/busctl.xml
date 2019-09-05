@@ -1,10 +1,7 @@
 <?xml version='1.0'?>
-<!DOCTYPE refentry PUBLIC "-//OASIS//DTD DocBook XML V4.2//EN"
-"http://www.oasis-open.org/docbook/xml/4.2/docbookx.dtd">
-
-<!--
-  SPDX-License-Identifier: LGPL-2.1+
--->
+<!DOCTYPE refentry PUBLIC "-//OASIS//DTD DocBook XML V4.5//EN"
+  "http://www.oasis-open.org/docbook/xml/4.2/docbookx.dtd">
+<!-- SPDX-License-Identifier: LGPL-2.1+ -->
 
 <refentry id="busctl"
           xmlns:xi="http://www.w3.org/2001/XInclude">
@@ -140,6 +137,16 @@
           <para>When used with the <command>call</command> or
           <command>get-property</command> command, shows output in a
           more verbose format.</para>
+        </listitem>
+      </varlistentry>
+
+      <varlistentry>
+        <term><option>--xml-interface</option></term>
+
+        <listitem>
+          <para>When used with the <command>introspect</command> call, dump the XML description received from
+          the D-Bus <constant>org.freedesktop.DBus.Introspectable.Introspect</constant> call instead of the
+          normal output.</para>
         </listitem>
       </varlistentry>
 

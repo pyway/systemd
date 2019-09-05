@@ -1,5 +1,9 @@
 /* SPDX-License-Identifier: LGPL-2.1+ */
 
+#include <sys/stat.h>
+#include <sys/types.h>
+#include <unistd.h>
+
 #include "sd-device.h"
 
 #include "alloc-util.h"
@@ -408,7 +412,7 @@ static int run(int argc, char *argv[]) {
                 const char *value;
 
                 if (validate_device(device) == 0) {
-                        unlink(saved);
+                        (void) unlink(saved);
                         return 0;
                 }
 

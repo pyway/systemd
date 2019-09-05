@@ -3,11 +3,14 @@
 #include <grp.h>
 #include <pwd.h>
 #include <sys/file.h>
+#include <sys/stat.h>
+#include <sys/types.h>
 
 #include "clean-ipc.h"
 #include "dynamic-user.h"
 #include "fd-util.h"
 #include "fileio.h"
+#include "format-util.h"
 #include "fs-util.h"
 #include "io-util.h"
 #include "nscd-flush.h"
@@ -17,6 +20,7 @@
 #include "socket-util.h"
 #include "stdio-util.h"
 #include "string-util.h"
+#include "strv.h"
 #include "user-util.h"
 
 /* Takes a value generated randomly or by hashing and turns it into a UID in the right range */
@@ -491,7 +495,7 @@ static int dynamic_user_realize(
                 errno = 0;
                 p = getpwuid(num);
                 if (!p)
-                        return errno > 0 ? -errno : -ESRCH;
+                        return errno_or_else(ESRCH);
 
                 gid = p->pw_gid;
         }
